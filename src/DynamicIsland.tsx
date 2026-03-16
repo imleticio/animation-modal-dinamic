@@ -23,7 +23,6 @@ const VIEWPORT_MARGIN = 16
 
 /* ── easings ── */
 const SPRING_OUT = 'elastic.out(1, 0.72)'
-const SPRING_IN = 'power3.in'
 const BLUR_EASE = 'power2.inOut'
 
 function clamp(v: number, lo: number, hi: number) {
@@ -89,6 +88,7 @@ export default function DynamicIsland({
     const backdropRef = useRef<HTMLButtonElement | null>(null)
     const closedRef = useRef<HTMLDivElement | null>(null)
     const modalRef = useRef<HTMLDivElement | null>(null)
+    const contentRef = useRef<HTMLDivElement | null>(null)
     const glowRef = useRef<HTMLDivElement | null>(null)
     const tlRef = useRef<gsap.core.Timeline | null>(null)
 
@@ -142,9 +142,10 @@ export default function DynamicIsland({
         const backdrop = backdropRef.current
         const closed = closedRef.current
         const modal = modalRef.current
+        const content = contentRef.current
         const glow = glowRef.current
 
-        if (!shell || !backdrop || !closed || !modal) return
+        if (!shell || !backdrop || !closed || !modal || !content) return
 
         snapShellToAnchor()
 
@@ -158,6 +159,7 @@ export default function DynamicIsland({
         gsap.set(backdrop, { autoAlpha: 0, backdropFilter: 'blur(0px)' })
         gsap.set(closed, { autoAlpha: 1, scale: 1, filter: 'blur(0px)' })
         gsap.set(modal, { autoAlpha: 0, y: 24, scale: 0.92, filter: 'blur(12px)' })
+        gsap.set(content, { filter: 'blur(0px)' })
         if (glow) gsap.set(glow, { autoAlpha: 0, scale: 0.8 })
 
         return () => killTl()
@@ -183,9 +185,10 @@ export default function DynamicIsland({
         const backdrop = backdropRef.current
         const closed = closedRef.current
         const modal = modalRef.current
+        const content = contentRef.current
         const glow = glowRef.current
 
-        if (!shell || !backdrop || !closed || !modal) return
+        if (!shell || !backdrop || !closed || !modal || !content) return
 
         /* re-sync position before animation starts */
         snapShellToAnchor()
@@ -266,70 +269,96 @@ export default function DynamicIsland({
         const backdrop = backdropRef.current
         const closed = closedRef.current
         const modal = modalRef.current
+        const content = contentRef.current
         const glow = glowRef.current
 
-        if (!shell || !backdrop || !closed || !modal) return
+        if (!shell || !backdrop || !closed || !modal || !content) return
 
         const { centerX, topY } = getAnchorPos()
+        const settleW = Math.max(anchorW - 6, anchorW * 0.96)
+        const settleH = Math.max(anchorH - 4, anchorH * 0.96)
+        const settlePad = Math.max(CLOSED_PADDING - 0.5, 6)
 
         setIsAnimating(true)
         killTl()
         if (modal) modal.style.overflowY = 'hidden'
+        gsap.set(shell, { willChange: 'left,top,width,height,border-radius,padding,box-shadow,transform' })
+        gsap.set(modal, { willChange: 'transform,opacity,filter' })
+        gsap.set(content, { willChange: 'filter' })
+        gsap.set(backdrop, { willChange: 'opacity' })
 
         const tl = gsap.timeline({
             onComplete: () => {
                 setIsOpen(false)
                 setIsAnimating(false)
                 snapShellToAnchor()
+                gsap.set(content, { filter: 'blur(0px)' })
+                gsap.set([shell, modal, content, backdrop], { clearProps: 'willChange' })
             },
         })
         tlRef.current = tl
 
-        /* modal blurs & sucks back */
+        /* modal content exits quickly, with a clipped defocus instead of blurring the shell outline */
         tl.to(modal, {
-            autoAlpha: 0, y: -14, scale: 0.88, filter: 'blur(10px)',
-            duration: 0.35, ease: SPRING_IN,
+            autoAlpha: 0, y: -4, scale: 0.985, filter: 'blur(6px)',
+            duration: 0.16, ease: 'power3.in',
         }, 0)
+        tl.to(content, {
+            filter: 'blur(5px)',
+            duration: 0.12,
+            ease: 'power2.in',
+        }, 0.02)
+        tl.to(content, {
+            filter: 'blur(0px)',
+            duration: 0.16,
+            ease: 'power1.out',
+        }, 0.18)
 
         /* glow out */
         if (glow) {
-            tl.to(glow, { autoAlpha: 0, scale: 0.8, duration: 0.3, ease: 'power2.in' }, 0.04)
+            tl.to(glow, { autoAlpha: 0, scale: 0.88, duration: 0.24, ease: 'power2.in' }, 0.02)
         }
 
-        /* backdrop blur unwind */
+        /* backdrop fades while shell collapses */
         tl.to(backdrop, {
-            autoAlpha: 0, backdropFilter: 'blur(0px)',
-            duration: 0.9, ease: BLUR_EASE,
-        }, 0.1)
+            autoAlpha: 0,
+            duration: 0.22, ease: 'power2.out',
+        }, 0)
+        tl.set(backdrop, { backdropFilter: 'blur(0px)' }, '>')
 
-        /* ── FLIP: shell morph back (GPU-accelerated) ── */
-        const flipState = Flip.getState(shell, "borderRadius,padding")
-        shell.style.left = `${centerX}px`
-        shell.style.top = `${topY}px`
-        shell.style.width = `${anchorW}px`
-        shell.style.height = `${anchorH}px`
-        shell.style.borderRadius = `${CLOSED_RADIUS}px`
-        shell.style.padding = `${CLOSED_PADDING}px`
-
-        const flipTl = Flip.from(flipState, {
-            duration: 0.78,
-            ease: SPRING_OUT,
-            absolute: true,
-            immediateRender: true
-        })
-        tl.add(flipTl, 0.12)
+        /* shell collapse in 2 phases: direct compression + subtle settle, no visible bounce */
+        tl.to(shell, {
+            left: centerX,
+            top: topY + 1,
+            width: settleW,
+            height: settleH,
+            borderRadius: CLOSED_RADIUS,
+            padding: settlePad,
+            duration: 0.26,
+            ease: 'power3.in',
+        }, 0.02)
+        tl.to(shell, {
+            top: topY,
+            width: anchorW,
+            height: anchorH,
+            padding: CLOSED_PADDING,
+            duration: 0.14,
+            ease: 'power2.out',
+        }, 0.28)
 
         /* shadow collapse */
         tl.to(shell, {
             boxShadow: '0 4px 24px -6px rgba(0,0,0,0.45)',
-            duration: 0.5, ease: 'power2.inOut',
-        }, 0.12)
+            duration: 0.28, ease: 'power2.inOut',
+        }, 0.04)
 
-        /* closed pill rebounds in */
-        tl.to(closed, {
-            autoAlpha: 1, scale: 1, filter: 'blur(0px)',
-            duration: 0.4, ease: SPRING_OUT,
-        }, 0.55)
+        /* closed pill returns near the end */
+        tl.fromTo(closed, {
+            autoAlpha: 0, scale: 0.985, y: 2, filter: 'blur(3px)',
+        }, {
+            autoAlpha: 1, scale: 1, y: 0, filter: 'blur(0px)',
+            duration: 0.18, ease: 'power2.out',
+        }, 0.26)
     }, [isAnimating, isOpen, killTl, getAnchorPos, snapShellToAnchor, anchorW, anchorH])
 
     /* ── Escape key ── */
@@ -390,7 +419,10 @@ export default function DynamicIsland({
                     className="pointer-events-none absolute inset-0 rounded-[inherit] bg-linear-to-br from-cyan-400/20 via-transparent to-blue-500/10"
                 />
 
-                <div className="relative h-full w-full">
+                <div
+                    ref={contentRef}
+                    className="relative h-full w-full"
+                >
                     {/* pill (closed) — renders user-provided trigger or plain fallback */}
                     <div
                         ref={closedRef}
