@@ -21,17 +21,16 @@ const DEFAULT_CLOSED_RADIUS = 999
 const CLOSED_PADDING = 8
 const OPEN_RADIUS = 44
 const VIEWPORT_MARGIN = 16
-const DRAG_CLOSE_THRESHOLD = 110
+const DRAG_CLOSE_THRESHOLD = 500
 const OPEN_BACKDROP_BLUR = 22
 const DRAG_GRAB_SCALE = 0.992
-const DRAG_PULL_SCALE = 0.088
-const DRAG_MODAL_PULL_SCALE = 0.12
+const DRAG_PULL_SCALE = 0.60           // shell shrinks aggressively on drag
 
 /* ── motion-blur tokens ── */
 const MOTION_BLUR_OPEN_PEAK = 18          // max vertical blur on open (subtle directional streak)
-const MOTION_BLUR_CLOSE_PEAK = 8          // max vertical blur on close
+const MOTION_BLUR_CLOSE_PEAK = 10          // max vertical blur on close
 const MOTION_BLUR_HORIZONTAL = 2          // subtle horizontal spread
-const DRAG_CONTENT_PULL_SCALE = 0.06
+const DRAG_MOTION_BLUR_PEAK = 3        // max blur per axis during drag
 const DRAG_PRE_CLOSE_SCALE = 0.92
 
 /* ── easings ── */
@@ -210,12 +209,18 @@ export default function DynamicIsland({
     const updateDragFeedback = useCallback((dx: number, dy: number) => {
         const shell = shellRef.current
         const backdrop = backdropRef.current
-        const modal = modalRef.current
-        const content = contentRef.current
-        if (!shell || !backdrop || !modal || !content) return
+        if (!shell || !backdrop) return
 
         const progress = getDragCloseProgress(dx, dy)
 
+        /* directional motion blur based on drag offset */
+        const dist = Math.hypot(dx, dy) || 1
+        const blurX = Math.abs(dx / dist) * progress * DRAG_MOTION_BLUR_PEAK
+        const blurY = Math.abs(dy / dist) * progress * DRAG_MOTION_BLUR_PEAK
+        setMotionBlur(filterId, blurX, blurY)
+        gsap.set(shell, { filter: `url(#${filterId})` })
+
+        /* shell shrinks as a whole unit */
         gsap.set(shell, {
             scale: DRAG_GRAB_SCALE - progress * DRAG_PULL_SCALE,
             boxShadow: `0 ${40 - progress * 18}px ${120 - progress * 42}px -20px rgba(0,0,0,${0.9 - progress * 0.22}), 0 0 ${60 - progress * 18}px -10px rgba(34,211,238,${0.15 - progress * 0.08})`,
@@ -224,37 +229,29 @@ export default function DynamicIsland({
             autoAlpha: 1 - progress * 0.28,
             backdropFilter: `blur(${OPEN_BACKDROP_BLUR - progress * 13}px)`,
         })
-        gsap.set(modal, {
-            autoAlpha: 1,
-            x: dx * 0.055,
-            y: dy * 0.055,
-            scale: 1 - progress * DRAG_MODAL_PULL_SCALE,
-            filter: `blur(${progress * 3.4}px)`,
-        })
-        gsap.set(content, {
-            scale: 1 - progress * DRAG_CONTENT_PULL_SCALE,
-            filter: `blur(${progress * 4.2}px)`,
-        })
-    }, [])
+    }, [filterId])
 
     const resetDragPosition = useCallback((animate = false) => {
         const shell = shellRef.current
         const backdrop = backdropRef.current
-        const modal = modalRef.current
-        const content = contentRef.current
-        if (!shell || !backdrop || !modal || !content) return
+        if (!shell || !backdrop) return
 
         const draggable = draggableRef.current
         const { left, top } = openPositionRef.current
-        gsap.killTweensOf([shell, backdrop, modal, content])
+        gsap.killTweensOf([shell, backdrop])
 
         if (animate) {
+            /* clear motion blur smoothly */
+            setMotionBlur(filterId, 0, 0)
+            gsap.set(shell, { filter: 'none' })
+
             gsap.to(shell, {
                 left,
                 top,
                 scale: 1,
-                duration: 0.24,
-                ease: 'back.out(1.2)',
+                boxShadow: '0 40px 120px -20px rgba(0,0,0,0.9), 0 0 60px -10px rgba(34,211,238,0.15)',
+                duration: 0.28,
+                ease: 'back.out(1.4)',
                 overwrite: 'auto',
                 onUpdate: () => { draggable?.update() },
                 onComplete: () => { draggable?.update() },
@@ -266,29 +263,6 @@ export default function DynamicIsland({
                 ease: 'power2.out',
                 overwrite: 'auto',
             })
-            gsap.to(modal, {
-                autoAlpha: 1,
-                x: 0,
-                y: 0,
-                scale: 1,
-                filter: 'blur(0px)',
-                duration: 0.24,
-                ease: 'back.out(1.1)',
-                overwrite: 'auto',
-            })
-            gsap.to(content, {
-                scale: 1,
-                filter: 'blur(0px)',
-                duration: 0.24,
-                ease: 'back.out(1.05)',
-                overwrite: 'auto',
-            })
-            gsap.to(shell, {
-                boxShadow: '0 40px 120px -20px rgba(0,0,0,0.9), 0 0 60px -10px rgba(34,211,238,0.15)',
-                duration: 0.24,
-                ease: 'power2.out',
-                overwrite: 'auto',
-            })
             return
         }
 
@@ -296,13 +270,13 @@ export default function DynamicIsland({
             left,
             top,
             scale: 1,
+            filter: 'none',
             boxShadow: '0 40px 120px -20px rgba(0,0,0,0.9), 0 0 60px -10px rgba(34,211,238,0.15)',
         })
+        setMotionBlur(filterId, 0, 0)
         gsap.set(backdrop, { autoAlpha: 1, backdropFilter: `blur(${OPEN_BACKDROP_BLUR}px)` })
-        gsap.set(modal, { autoAlpha: 1, x: 0, y: 0, scale: 1, filter: 'blur(0px)' })
-        gsap.set(content, { scale: 1, filter: 'blur(0px)' })
         draggable?.update()
-    }, [])
+    }, [filterId])
 
     /** Returns center-X and top-Y of the anchor in viewport coords */
     const getAnchorPos = useCallback(() => {
@@ -574,30 +548,28 @@ export default function DynamicIsland({
         })
         tlRef.current = tl
 
-        /* modal content exits quickly */
+        /* modal content exits — no blur on drag dismiss, just fade + scale */
         tl.to(modal, {
             autoAlpha: 0,
             x: exitX,
             y: exitY,
-            scale: dragDismiss ? 0.9 : 0.96,
-            filter: `blur(${exitBlur}px)`,
-            duration: dragDismiss ? 0.18 : 0.12,
-            ease: dragDismiss ? 'power3.out' : 'power3.in',
+            scale: dragDismiss ? 0.92 : 0.96,
+            filter: dragDismiss ? 'none' : `blur(${exitBlur}px)`,
+            duration: dragDismiss ? 0.22 : 0.12,
+            ease: dragDismiss ? 'power2.out' : 'power3.in',
         }, 0)
-        tl.to(content, {
-            filter: `blur(${dragDismiss ? 8 : 4}px)`,
-            x: dragDismiss ? dx * 0.12 : 0,
-            y: dragDismiss ? dy * 0.12 : 0,
-            duration: dragDismiss ? 0.14 : 0.1,
-            ease: 'power2.in',
-        }, 0.01)
-        tl.to(content, {
-            filter: 'blur(0px)',
-            x: 0,
-            y: 0,
-            duration: dragDismiss ? 0.14 : 0.12,
-            ease: 'power1.out',
-        }, dragDismiss ? 0.16 : 0.12)
+        if (!dragDismiss) {
+            tl.to(content, {
+                filter: 'blur(4px)',
+                duration: 0.1,
+                ease: 'power2.in',
+            }, 0.01)
+            tl.to(content, {
+                filter: 'blur(0px)',
+                duration: 0.12,
+                ease: 'power1.out',
+            }, 0.12)
+        }
 
         /* ── motion blur on shell during collapse ── */
         setMotionBlur(filterId, MOTION_BLUR_HORIZONTAL, 0)
@@ -748,6 +720,8 @@ export default function DynamicIsland({
             onRelease() {
                 if (!this.isDragging) {
                     gsap.set(shell, { cursor: 'grab' })
+                    setMotionBlur(filterId, 0, 0)
+                    gsap.set(shell, { filter: 'none' })
                     gsap.to(shell, {
                         scale: 1,
                         duration: 0.18,
