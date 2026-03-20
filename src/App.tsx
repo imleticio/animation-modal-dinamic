@@ -95,6 +95,7 @@ export default function App() {
             </button>
           }
         >
+          
           <LoginForm />
         </DynamicIsland>
       </div>

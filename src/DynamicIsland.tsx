@@ -1,8 +1,7 @@
 import { gsap } from 'gsap'
-import { Flip } from 'gsap/dist/Flip'
 import { Draggable } from 'gsap/dist/Draggable'
 
-gsap.registerPlugin(Flip, Draggable)
+gsap.registerPlugin(Draggable)
 import {
     useCallback,
     useEffect,
@@ -17,7 +16,7 @@ import { createPortal } from 'react-dom'
 /* ── geometry tokens ── */
 const DEFAULT_CLOSED_WIDTH = 176
 const DEFAULT_CLOSED_HEIGHT = 64
-const CLOSED_RADIUS = 999
+const DEFAULT_CLOSED_RADIUS = 999
 const CLOSED_PADDING = 8
 const OPEN_RADIUS = 44
 const VIEWPORT_MARGIN = 16
@@ -29,7 +28,7 @@ const DRAG_MODAL_PULL_SCALE = 0.12
 
 /* ── motion-blur tokens ── */
 const MOTION_BLUR_FILTER_ID = 'di-motion-blur'
-const MOTION_BLUR_OPEN_PEAK = 300        // max vertical blur on open
+const MOTION_BLUR_OPEN_PEAK = 220        // max vertical blur on open
 const MOTION_BLUR_CLOSE_PEAK = 8          // max vertical blur on close
 const MOTION_BLUR_HORIZONTAL = 3          // subtle horizontal spread
 const DRAG_CONTENT_PULL_SCALE = 0.06
@@ -43,11 +42,46 @@ function clamp(v: number, lo: number, hi: number) {
     return Math.min(Math.max(v, lo), hi)
 }
 
+function px(value: number) {
+    return `${Math.round(value * 100) / 100}px`
+}
+
+function getEffectiveBorderRadius(triggerEl: HTMLElement) {
+    const computed = getComputedStyle(triggerEl)
+    const parsedRadius = parseFloat(computed.borderTopLeftRadius || computed.borderRadius)
+    const { width, height } = triggerEl.getBoundingClientRect()
+    const maxEffectiveRadius = Math.min(width, height) / 2
+
+    if (Number.isNaN(parsedRadius) || parsedRadius < 0) {
+        return maxEffectiveRadius || DEFAULT_CLOSED_RADIUS
+    }
+
+    return Math.min(parsedRadius, maxEffectiveRadius || parsedRadius)
+}
+
 function getOpenMetrics() {
     const width = Math.min(window.innerWidth * 0.92, 430)
     const height = clamp(window.innerHeight * 0.72, 360, 500)
     const padding = window.innerWidth < 640 ? 16 : 22
     return { width, height, padding }
+}
+
+function getOpenMorphRadii(closedRadius: number) {
+    const softRadius = Math.max(closedRadius * 0.38, 24)
+    const longRadius = Math.max(closedRadius * 0.78, 44)
+
+    return {
+        launch: `${px(softRadius)} ${px(longRadius)} ${px(OPEN_RADIUS * 1.46)} ${px(OPEN_RADIUS * 0.82)} / ${px(longRadius)} ${px(softRadius)} ${px(OPEN_RADIUS * 0.92)} ${px(OPEN_RADIUS * 1.3)}`,
+        travel: `${px(OPEN_RADIUS * 1.24)} ${px(OPEN_RADIUS * 0.8)} ${px(OPEN_RADIUS * 1.14)} ${px(OPEN_RADIUS * 0.92)} / ${px(OPEN_RADIUS * 0.88)} ${px(OPEN_RADIUS * 1.34)} ${px(OPEN_RADIUS * 0.96)} ${px(OPEN_RADIUS * 1.12)}`,
+        settle: px(OPEN_RADIUS),
+    }
+}
+
+function getCloseMorphRadii(closedRadius: number) {
+    return {
+        gather: `${px(OPEN_RADIUS * 1.22)} ${px(OPEN_RADIUS * 0.76)} ${px(closedRadius * 1.3)} ${px(closedRadius * 0.72)} / ${px(OPEN_RADIUS * 0.9)} ${px(OPEN_RADIUS * 1.28)} ${px(closedRadius * 0.9)} ${px(closedRadius * 1.16)}`,
+        settle: px(closedRadius),
+    }
 }
 
 /**
@@ -157,6 +191,7 @@ export default function DynamicIsland({
     /* measured dimensions of the anchor (trigger content) */
     const [anchorW, setAnchorW] = useState(DEFAULT_CLOSED_WIDTH)
     const [anchorH, setAnchorH] = useState(DEFAULT_CLOSED_HEIGHT)
+    const [anchorRadius, setAnchorRadius] = useState(DEFAULT_CLOSED_RADIUS)
 
     const killTl = useCallback(() => {
         tlRef.current?.kill()
@@ -291,7 +326,7 @@ export default function DynamicIsland({
         openPositionRef.current = { left, top }
     }, [])
 
-    /* ── measure anchor size via ResizeObserver ── */
+    /* ── measure anchor size + borderRadius via ResizeObserver ── */
     useEffect(() => {
         const anchor = anchorRef.current
         if (!anchor) return
@@ -299,6 +334,12 @@ export default function DynamicIsland({
             const { width, height } = entry.contentRect
             if (width > 0) setAnchorW(width)
             if (height > 0) setAnchorH(height)
+
+            /* read the trigger radius, clamped to its real visual limit */
+            const triggerEl = anchor.querySelector(':scope > div > *') as HTMLElement | null
+            if (triggerEl) {
+                setAnchorRadius(getEffectiveBorderRadius(triggerEl))
+            }
         })
         ro.observe(anchor)
         return () => ro.disconnect()
@@ -320,7 +361,7 @@ export default function DynamicIsland({
         gsap.set(shell, {
             width: anchorW,
             height: anchorH,
-            borderRadius: CLOSED_RADIUS,
+            borderRadius: anchorRadius,
             padding: CLOSED_PADDING,
             x: 0,
             y: 0,
@@ -336,7 +377,7 @@ export default function DynamicIsland({
             killTl()
             killDraggable()
         }
-    }, [killTl, killDraggable, snapShellToAnchor, anchorW, anchorH])
+    }, [killTl, killDraggable, snapShellToAnchor, anchorW, anchorH, anchorRadius])
 
     /* keep shell position in sync on scroll / resize (closed only) */
     useEffect(() => {
@@ -379,16 +420,27 @@ export default function DynamicIsland({
 
         if (modal) modal.style.overflowY = 'hidden'
 
+        const openRadii = getOpenMorphRadii(anchorRadius)
+        const openLeadLeft = centerX + (openLeft - centerX) * 0.3
+        const openLeadTop = Math.max(VIEWPORT_MARGIN, topY - 10)
+        const openLeadWidth = Math.max(anchorW + 42, anchorW * 1.18)
+        const openLeadHeight = Math.max(anchorH + 18, anchorH * 1.14)
+
         const tl = gsap.timeline({
             onComplete: () => {
                 setIsAnimating(false)
                 if (modal) modal.style.overflowY = 'auto'
                 /* ensure motion blur is fully cleared */
                 setMotionBlur(0, 0)
-                gsap.set(shell, { filter: 'none' })
+                gsap.set(shell, { filter: 'none', clearProps: 'willChange' })
+                gsap.set([modal, content, backdrop], { clearProps: 'willChange' })
             },
         })
         tlRef.current = tl
+        gsap.set(shell, { willChange: 'left,top,width,height,border-radius,padding,box-shadow,transform,filter' })
+        gsap.set(modal, { willChange: 'transform,opacity,filter' })
+        gsap.set(content, { willChange: 'filter,transform' })
+        gsap.set(backdrop, { willChange: 'opacity' })
 
         /* closed content dissolves */
         tl.to(closed, {
@@ -425,22 +477,39 @@ export default function DynamicIsland({
             },
         }, 0.08)
 
-        /* ── FLIP: shell morph (GPU-accelerated) ── */
-        const flipState = Flip.getState(shell, "borderRadius,padding")
-        shell.style.left = `${openLeft}px`
-        shell.style.top = `${openTop}px`
-        shell.style.width = `${width}px`
-        shell.style.height = `${height}px`
-        shell.style.borderRadius = `${OPEN_RADIUS}px`
-        shell.style.padding = `${padding}px`
-
-        const flipTl = Flip.from(flipState, {
-            duration: 0.88,
+        /* shell morph with asymmetric radii so the capsule feels liquid */
+        tl.to(shell, {
+            left: openLeadLeft,
+            top: openLeadTop,
+            width: openLeadWidth,
+            height: openLeadHeight,
+            padding: CLOSED_PADDING + 4,
+            borderRadius: openRadii.launch,
+            scaleX: 1.035,
+            scaleY: 0.975,
+            duration: 0.16,
+            ease: 'power2.out',
+        }, 0.02)
+        tl.to(shell, {
+            left: openLeft,
+            top: openTop,
+            width,
+            height,
+            padding: padding + 4,
+            borderRadius: openRadii.travel,
+            scaleX: 0.988,
+            scaleY: 1.012,
+            duration: 0.42,
+            ease: 'expo.out',
+        }, 0.12)
+        tl.to(shell, {
+            padding,
+            borderRadius: openRadii.settle,
+            scaleX: 1,
+            scaleY: 1,
+            duration: 0.28,
             ease: SPRING_OUT,
-            absolute: true,
-            immediateRender: true
-        })
-        tl.add(flipTl, 0.02)
+        }, 0.5)
 
         /* shadow bloom */
         tl.to(shell, {
@@ -477,8 +546,6 @@ export default function DynamicIsland({
         if (!shell || !backdrop || !closed || !modal || !content) return
 
         const { centerX, topY } = getAnchorPos()
-        const settleW = Math.max(anchorW - 6, anchorW * 0.96)
-        const settleH = Math.max(anchorH - 4, anchorH * 0.96)
         const settlePad = Math.max(CLOSED_PADDING - 0.5, 6)
         const { dx, dy } = dragStateRef.current
         const currentLeft = getPixelValue(shell, 'left')
@@ -498,6 +565,12 @@ export default function DynamicIsland({
         gsap.set(modal, { willChange: 'transform,opacity,filter' })
         gsap.set(content, { willChange: 'filter' })
         gsap.set(backdrop, { willChange: 'opacity' })
+
+        const closeRadii = getCloseMorphRadii(anchorRadius)
+        const gatherLeft = centerX + (commitLeft - centerX) * (dragDismiss ? 0.16 : 0.08)
+        const gatherTop = topY + (dragDismiss ? 6 : 10)
+        const gatherW = Math.max(anchorW * (dragDismiss ? 1.3 : 1.24), anchorW + 34)
+        const gatherH = Math.max(anchorH * (dragDismiss ? 1.12 : 1.08), anchorH + 12)
 
         const tl = gsap.timeline({
             onComplete: () => {
@@ -585,27 +658,32 @@ export default function DynamicIsland({
             }, 0)
         }
 
-        /* shell collapse in 2 phases: commit movement + compression + settle */
+        /* shell gathers into a blob before locking back to the trigger */
         tl.to(shell, {
-            left: centerX,
-            top: topY + 1,
-            width: settleW,
-            height: settleH,
-            borderRadius: CLOSED_RADIUS,
+            left: gatherLeft,
+            top: gatherTop,
+            width: gatherW,
+            height: gatherH,
+            borderRadius: closeRadii.gather,
             padding: settlePad,
-            scale: dragDismiss ? 0.96 : 1,
-            duration: dragDismiss ? 0.3 : 0.26,
-            ease: dragDismiss ? 'power4.in' : 'power3.in',
+            scaleX: dragDismiss ? 1.04 : 1.02,
+            scaleY: dragDismiss ? 0.92 : 0.95,
+            duration: dragDismiss ? 0.22 : 0.2,
+            ease: 'power3.in',
         }, dragDismiss ? 0.08 : 0.02)
         tl.to(shell, {
+            left: centerX,
             top: topY,
             width: anchorW,
             height: anchorH,
+            borderRadius: closeRadii.settle,
             padding: CLOSED_PADDING,
+            scaleX: 1,
+            scaleY: 1,
             scale: 1,
-            duration: dragDismiss ? 0.16 : 0.14,
-            ease: 'power2.out',
-        }, dragDismiss ? 0.3 : 0.28)
+            duration: dragDismiss ? 0.24 : 0.2,
+            ease: 'elastic.out(1, 0.7)',
+        }, dragDismiss ? 0.26 : 0.2)
 
         /* shadow collapse */
         tl.to(shell, {
@@ -620,7 +698,7 @@ export default function DynamicIsland({
             autoAlpha: 1, scale: 1, y: 0, filter: 'blur(0px)',
             duration: 0.18, ease: 'power2.out',
         }, 0.26)
-    }, [isAnimating, isOpen, killTl, getAnchorPos, snapShellToAnchor, anchorW, anchorH])
+    }, [isAnimating, isOpen, killTl, getAnchorPos, snapShellToAnchor, anchorW, anchorH, anchorRadius])
 
     /* ── Escape key ── */
     useEffect(() => {
