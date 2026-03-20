@@ -223,7 +223,7 @@ export default function DynamicIsland({
         /* shell shrinks as a whole unit */
         gsap.set(shell, {
             scale: DRAG_GRAB_SCALE - progress * DRAG_PULL_SCALE,
-            boxShadow: `0 ${40 - progress * 18}px ${120 - progress * 42}px -20px rgba(0,0,0,${0.9 - progress * 0.22}), 0 0 ${60 - progress * 18}px -10px rgba(34,211,238,${0.15 - progress * 0.08})`,
+            boxShadow: `0 ${40 - progress * 18}px ${120 - progress * 42}px -20px rgba(0,0,0,${0.18 - progress * 0.06}), 0 0 ${60 - progress * 18}px -10px rgba(0,0,0,${0.06 - progress * 0.03})`,
         })
         gsap.set(backdrop, {
             autoAlpha: 1 - progress * 0.28,
@@ -249,7 +249,7 @@ export default function DynamicIsland({
                 left,
                 top,
                 scale: 1,
-                boxShadow: '0 40px 120px -20px rgba(0,0,0,0.9), 0 0 60px -10px rgba(34,211,238,0.15)',
+                boxShadow: '0 40px 120px -20px rgba(0,0,0,0.18), 0 0 60px -10px rgba(0,0,0,0.06)',
                 duration: 0.28,
                 ease: 'back.out(1.4)',
                 overwrite: 'auto',
@@ -271,7 +271,7 @@ export default function DynamicIsland({
             top,
             scale: 1,
             filter: 'none',
-            boxShadow: '0 40px 120px -20px rgba(0,0,0,0.9), 0 0 60px -10px rgba(34,211,238,0.15)',
+            boxShadow: '0 40px 120px -20px rgba(0,0,0,0.18), 0 0 60px -10px rgba(0,0,0,0.06)',
         })
         setMotionBlur(filterId, 0, 0)
         gsap.set(backdrop, { autoAlpha: 1, backdropFilter: `blur(${OPEN_BACKDROP_BLUR}px)` })
@@ -478,7 +478,7 @@ export default function DynamicIsland({
 
         /* shadow bloom */
         tl.to(shell, {
-            boxShadow: '0 40px 120px -20px rgba(0,0,0,0.9), 0 0 60px -10px rgba(34,211,238,0.15)',
+            boxShadow: '0 40px 120px -20px rgba(0,0,0,0.18), 0 0 60px -10px rgba(0,0,0,0.06)',
             duration: 0.35, ease: 'power2.out',
         }, 0.04)
 
@@ -516,9 +516,6 @@ export default function DynamicIsland({
         const currentTop = getPixelValue(shell, 'top')
         const commitLeft = dragDismiss ? currentLeft + dx * 0.08 : currentLeft
         const commitTop = dragDismiss ? currentTop + dy * 0.08 : currentTop
-        const exitX = dragDismiss ? dx * 0.22 : 0
-        const exitY = dragDismiss ? dy * 0.22 : -4
-        const exitBlur = dragDismiss ? 14 : 6
 
         setIsAnimating(true)
         killTl()
@@ -548,17 +545,24 @@ export default function DynamicIsland({
         })
         tlRef.current = tl
 
-        /* modal content exits — no blur on drag dismiss, just fade + scale */
-        tl.to(modal, {
-            autoAlpha: 0,
-            x: exitX,
-            y: exitY,
-            scale: dragDismiss ? 0.92 : 0.96,
-            filter: dragDismiss ? 'none' : `blur(${exitBlur}px)`,
-            duration: dragDismiss ? 0.22 : 0.12,
-            ease: dragDismiss ? 'power2.out' : 'power3.in',
-        }, 0)
-        if (!dragDismiss) {
+        if (dragDismiss) {
+            /* drag dismiss: content stays visible, shell clips it as it shrinks.
+               Only a quick late fade to clean up at the very end. */
+            tl.to(modal, {
+                autoAlpha: 0,
+                duration: 0.12,
+                ease: 'power2.in',
+            }, 0.16)
+        } else {
+            /* click close: quick fade + blur */
+            tl.to(modal, {
+                autoAlpha: 0,
+                y: -4,
+                scale: 0.96,
+                filter: 'blur(6px)',
+                duration: 0.12,
+                ease: 'power3.in',
+            }, 0)
             tl.to(content, {
                 filter: 'blur(4px)',
                 duration: 0.1,
@@ -771,7 +775,7 @@ export default function DynamicIsland({
                 type="button"
                 aria-label="Cerrar"
                 onClick={() => close()}
-                className={`fixed inset-0 bg-slate-950/60 ${isOpen || isAnimating ? 'pointer-events-auto' : 'pointer-events-none'
+                className={`fixed inset-0  ${isOpen || isAnimating ? 'pointer-events-auto' : 'pointer-events-none'
                     }`}
                 style={{
                     zIndex: 9998,
@@ -793,7 +797,7 @@ export default function DynamicIsland({
                 {/* glow */}
                 <div
                     ref={glowRef}
-                    className="pointer-events-none absolute inset-0 rounded-[inherit] bg-linear-to-br from-cyan-400/20 via-transparent to-blue-500/10"
+                    className="pointer-events-none absolute inset-0 rounded-[inherit] bg-linear-to-br from-white "
                 />
 
                 <div
@@ -824,19 +828,17 @@ export default function DynamicIsland({
                     {/* expanded content */}
                     <div
                         ref={modalRef}
-                        className="absolute inset-0 flex flex-col gap-6"
+                        className="absolute inset-0 flex flex-col gap-6 select-none"
                         aria-hidden={!isOpen}
                         style={{ cursor: isOpen && !isAnimating ? 'grab' : 'default' }}
                     >
                         {/* built-in close header */}
                         <div className="flex items-center justify-between">
-                            <p className="text-xs uppercase tracking-[0.2em] text-cyan-200/85">
-                                Dynamic Island
-                            </p>
+                           
                             <button
                                 type="button"
                                 onClick={() => close()}
-                                className="rounded-full border border-white/25 bg-white/10 px-3 py-1.5 text-xs font-medium uppercase tracking-wider text-slate-200 transition-colors duration-200 hover:bg-white/20"
+                                className="rounded-full border border-white/25 bg-white/10 px-3 py-1.5 text-xs font-medium uppercase tracking-wider text-black transition-colors duration-200 hover:bg-white/20"
                             >
                                 Cerrar
                             </button>
