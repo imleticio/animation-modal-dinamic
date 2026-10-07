@@ -1,7 +1,8 @@
 import { gsap } from 'gsap'
 import { Flip } from 'gsap/dist/Flip'
+import { Draggable } from 'gsap/dist/Draggable'
 
-gsap.registerPlugin(Flip)
+gsap.registerPlugin(Flip, Draggable)
 import {
     useCallback,
     useEffect,
@@ -20,10 +21,12 @@ const CLOSED_RADIUS = 999
 const CLOSED_PADDING = 8
 const OPEN_RADIUS = 44
 const VIEWPORT_MARGIN = 16
+const DRAG_CLOSE_THRESHOLD = 110
+const DRAG_CLOSE_MIN_AXIS = 72
+const OPEN_BACKDROP_BLUR = 22
 
 /* ── easings ── */
 const SPRING_OUT = 'elastic.out(1, 0.72)'
-const SPRING_IN = 'power3.in'
 const BLUR_EASE = 'power2.inOut'
 
 function clamp(v: number, lo: number, hi: number) {
@@ -75,6 +78,10 @@ interface DynamicIslandProps {
     children: ReactNode
 }
 
+function getPixelValue(target: gsap.TweenTarget, property: string) {
+    return Number(gsap.getProperty(target, property)) || 0
+}
+
 export default function DynamicIsland({
     trigger,
     triggerLabel = 'ABRIR',
@@ -89,8 +96,12 @@ export default function DynamicIsland({
     const backdropRef = useRef<HTMLButtonElement | null>(null)
     const closedRef = useRef<HTMLDivElement | null>(null)
     const modalRef = useRef<HTMLDivElement | null>(null)
+    const contentRef = useRef<HTMLDivElement | null>(null)
     const glowRef = useRef<HTMLDivElement | null>(null)
     const tlRef = useRef<gsap.core.Timeline | null>(null)
+    const draggableRef = useRef<Draggable | null>(null)
+    const openPositionRef = useRef({ left: 0, top: 0 })
+    const dragStateRef = useRef({ startLeft: 0, startTop: 0, dx: 0, dy: 0 })
 
     /* measured dimensions of the anchor (trigger content) */
     const [anchorW, setAnchorW] = useState(DEFAULT_CLOSED_WIDTH)
@@ -99,6 +110,90 @@ export default function DynamicIsland({
     const killTl = useCallback(() => {
         tlRef.current?.kill()
         tlRef.current = null
+    }, [])
+
+    const killDraggable = useCallback(() => {
+        draggableRef.current?.kill()
+        draggableRef.current = null
+    }, [])
+
+    const updateDragFeedback = useCallback((dx: number, dy: number) => {
+        const backdrop = backdropRef.current
+        const modal = modalRef.current
+        const content = contentRef.current
+        if (!backdrop || !modal || !content) return
+
+        const distance = Math.hypot(dx, dy)
+        const progress = clamp(distance / DRAG_CLOSE_THRESHOLD, 0, 1)
+
+        gsap.set(backdrop, {
+            autoAlpha: 1 - progress * 0.18,
+            backdropFilter: `blur(${OPEN_BACKDROP_BLUR - progress * 10}px)`,
+        })
+        gsap.set(modal, {
+            autoAlpha: 1,
+            x: dx * 0.045,
+            y: dy * 0.045,
+            filter: `blur(${progress * 1.8}px)`,
+        })
+        gsap.set(content, {
+            scale: 1 - progress * 0.014,
+            filter: `blur(${progress * 2.4}px)`,
+        })
+    }, [])
+
+    const resetDragPosition = useCallback((animate = false) => {
+        const shell = shellRef.current
+        const backdrop = backdropRef.current
+        const modal = modalRef.current
+        const content = contentRef.current
+        if (!shell || !backdrop || !modal || !content) return
+
+        const draggable = draggableRef.current
+        const { left, top } = openPositionRef.current
+        gsap.killTweensOf([shell, backdrop, modal, content])
+
+        if (animate) {
+            gsap.to(shell, {
+                left,
+                top,
+                duration: 0.24,
+                ease: 'power3.out',
+                overwrite: 'auto',
+                onUpdate: () => { draggable?.update() },
+                onComplete: () => { draggable?.update() },
+            })
+            gsap.to(backdrop, {
+                autoAlpha: 1,
+                backdropFilter: `blur(${OPEN_BACKDROP_BLUR}px)`,
+                duration: 0.24,
+                ease: 'power2.out',
+                overwrite: 'auto',
+            })
+            gsap.to(modal, {
+                autoAlpha: 1,
+                x: 0,
+                y: 0,
+                filter: 'blur(0px)',
+                duration: 0.24,
+                ease: 'power2.out',
+                overwrite: 'auto',
+            })
+            gsap.to(content, {
+                scale: 1,
+                filter: 'blur(0px)',
+                duration: 0.24,
+                ease: 'power2.out',
+                overwrite: 'auto',
+            })
+            return
+        }
+
+        gsap.set(shell, { left, top })
+        gsap.set(backdrop, { autoAlpha: 1, backdropFilter: `blur(${OPEN_BACKDROP_BLUR}px)` })
+        gsap.set(modal, { autoAlpha: 1, x: 0, y: 0, filter: 'blur(0px)' })
+        gsap.set(content, { scale: 1, filter: 'blur(0px)' })
+        draggable?.update()
     }, [])
 
     /** Returns center-X and top-Y of the anchor in viewport coords */
@@ -123,6 +218,10 @@ export default function DynamicIsland({
         shell.style.top = `${topY}px`
     }, [getAnchorPos])
 
+    const setOpenPosition = useCallback((left: number, top: number) => {
+        openPositionRef.current = { left, top }
+    }, [])
+
     /* ── measure anchor size via ResizeObserver ── */
     useEffect(() => {
         const anchor = anchorRef.current
@@ -142,9 +241,10 @@ export default function DynamicIsland({
         const backdrop = backdropRef.current
         const closed = closedRef.current
         const modal = modalRef.current
+        const content = contentRef.current
         const glow = glowRef.current
 
-        if (!shell || !backdrop || !closed || !modal) return
+        if (!shell || !backdrop || !closed || !modal || !content) return
 
         snapShellToAnchor()
 
@@ -153,15 +253,21 @@ export default function DynamicIsland({
             height: anchorH,
             borderRadius: CLOSED_RADIUS,
             padding: CLOSED_PADDING,
+            x: 0,
+            y: 0,
             boxShadow: '0 4px 24px -6px rgba(0,0,0,0.45)',
         })
         gsap.set(backdrop, { autoAlpha: 0, backdropFilter: 'blur(0px)' })
         gsap.set(closed, { autoAlpha: 1, scale: 1, filter: 'blur(0px)' })
         gsap.set(modal, { autoAlpha: 0, y: 24, scale: 0.92, filter: 'blur(12px)' })
+        gsap.set(content, { filter: 'blur(0px)' })
         if (glow) gsap.set(glow, { autoAlpha: 0, scale: 0.8 })
 
-        return () => killTl()
-    }, [killTl, snapShellToAnchor, anchorW, anchorH])
+        return () => {
+            killTl()
+            killDraggable()
+        }
+    }, [killTl, killDraggable, snapShellToAnchor, anchorW, anchorH])
 
     /* keep shell position in sync on scroll / resize (closed only) */
     useEffect(() => {
@@ -183,9 +289,10 @@ export default function DynamicIsland({
         const backdrop = backdropRef.current
         const closed = closedRef.current
         const modal = modalRef.current
+        const content = contentRef.current
         const glow = glowRef.current
 
-        if (!shell || !backdrop || !closed || !modal) return
+        if (!shell || !backdrop || !closed || !modal || !content) return
 
         /* re-sync position before animation starts */
         snapShellToAnchor()
@@ -198,6 +305,8 @@ export default function DynamicIsland({
         setIsOpen(true)
         setIsAnimating(true)
         killTl()
+        killDraggable()
+        setOpenPosition(openLeft, openTop)
 
         if (modal) modal.style.overflowY = 'hidden'
 
@@ -217,7 +326,7 @@ export default function DynamicIsland({
 
         /* backdrop */
         tl.to(backdrop, {
-            autoAlpha: 1, backdropFilter: 'blur(22px)',
+            autoAlpha: 1, backdropFilter: `blur(${OPEN_BACKDROP_BLUR}px)`,
             duration: 0.55, ease: BLUR_EASE,
         }, 0)
 
@@ -251,85 +360,131 @@ export default function DynamicIsland({
         }
 
         /* modal frosted-glass reveal */
-        gsap.set(modal, { filter: 'blur(12px)' })
+        gsap.set(modal, { autoAlpha: 0, y: 24, scale: 0.92, filter: 'blur(12px)' })
+        gsap.set(content, { filter: 'blur(0px)', scale: 1 })
         tl.to(modal, {
             autoAlpha: 1, y: 0, scale: 1, filter: 'blur(0px)',
             duration: 0.7, ease: SPRING_OUT,
         }, 0.22)
-    }, [isAnimating, isOpen, killTl, snapShellToAnchor, getAnchorPos])
+    }, [isAnimating, isOpen, killTl, killDraggable, snapShellToAnchor, getAnchorPos, setOpenPosition])
 
     /* ── CLOSE ── */
-    const close = useCallback(() => {
+    const close = useCallback((dragDismiss = false) => {
         if (isAnimating || !isOpen) return
 
         const shell = shellRef.current
         const backdrop = backdropRef.current
         const closed = closedRef.current
         const modal = modalRef.current
+        const content = contentRef.current
         const glow = glowRef.current
 
-        if (!shell || !backdrop || !closed || !modal) return
+        if (!shell || !backdrop || !closed || !modal || !content) return
 
         const { centerX, topY } = getAnchorPos()
+        const settleW = Math.max(anchorW - 6, anchorW * 0.96)
+        const settleH = Math.max(anchorH - 4, anchorH * 0.96)
+        const settlePad = Math.max(CLOSED_PADDING - 0.5, 6)
+        const { dx, dy } = dragStateRef.current
+        const exitX = dragDismiss ? dx * 0.18 : 0
+        const exitY = dragDismiss ? dy * 0.18 : -4
+        const exitBlur = dragDismiss ? 10 : 6
 
         setIsAnimating(true)
         killTl()
+        draggableRef.current?.disable()
+        gsap.killTweensOf([shell, backdrop, modal, content])
         if (modal) modal.style.overflowY = 'hidden'
+        gsap.set(shell, { willChange: 'left,top,width,height,border-radius,padding,box-shadow,transform' })
+        gsap.set(modal, { willChange: 'transform,opacity,filter' })
+        gsap.set(content, { willChange: 'filter' })
+        gsap.set(backdrop, { willChange: 'opacity' })
 
         const tl = gsap.timeline({
             onComplete: () => {
                 setIsOpen(false)
                 setIsAnimating(false)
                 snapShellToAnchor()
+                dragStateRef.current = { startLeft: 0, startTop: 0, dx: 0, dy: 0 }
+                gsap.set(backdrop, { autoAlpha: 0, backdropFilter: 'blur(0px)' })
+                gsap.set(modal, { autoAlpha: 0, x: 0, y: 24, scale: 0.92, filter: 'blur(12px)' })
+                gsap.set(content, { filter: 'blur(0px)', scale: 1 })
+                gsap.set(shell, { clearProps: 'cursor' })
+                gsap.set([shell, modal, content, backdrop], { clearProps: 'willChange' })
             },
         })
         tlRef.current = tl
 
-        /* modal blurs & sucks back */
+        /* modal content exits quickly, with a clipped defocus instead of blurring the shell outline */
         tl.to(modal, {
-            autoAlpha: 0, y: -14, scale: 0.88, filter: 'blur(10px)',
-            duration: 0.35, ease: SPRING_IN,
+            autoAlpha: 0,
+            x: exitX,
+            y: exitY,
+            scale: dragDismiss ? 0.972 : 0.985,
+            filter: `blur(${exitBlur}px)`,
+            duration: dragDismiss ? 0.22 : 0.16,
+            ease: dragDismiss ? 'power3.out' : 'power3.in',
         }, 0)
+        tl.to(content, {
+            filter: `blur(${dragDismiss ? 8 : 5}px)`,
+            x: dragDismiss ? dx * 0.1 : 0,
+            y: dragDismiss ? dy * 0.1 : 0,
+            duration: dragDismiss ? 0.18 : 0.12,
+            ease: 'power2.in',
+        }, 0.02)
+        tl.to(content, {
+            filter: 'blur(0px)',
+            x: 0,
+            y: 0,
+            duration: dragDismiss ? 0.2 : 0.16,
+            ease: 'power1.out',
+        }, dragDismiss ? 0.22 : 0.18)
 
         /* glow out */
         if (glow) {
-            tl.to(glow, { autoAlpha: 0, scale: 0.8, duration: 0.3, ease: 'power2.in' }, 0.04)
+            tl.to(glow, { autoAlpha: 0, scale: 0.88, duration: 0.24, ease: 'power2.in' }, 0.02)
         }
 
-        /* backdrop blur unwind */
+        /* backdrop fades while shell collapses */
         tl.to(backdrop, {
-            autoAlpha: 0, backdropFilter: 'blur(0px)',
-            duration: 0.9, ease: BLUR_EASE,
-        }, 0.1)
+            autoAlpha: 0,
+            duration: 0.22, ease: 'power2.out',
+        }, 0)
+        tl.set(backdrop, { backdropFilter: 'blur(0px)' }, '>')
 
-        /* ── FLIP: shell morph back (GPU-accelerated) ── */
-        const flipState = Flip.getState(shell, "borderRadius,padding")
-        shell.style.left = `${centerX}px`
-        shell.style.top = `${topY}px`
-        shell.style.width = `${anchorW}px`
-        shell.style.height = `${anchorH}px`
-        shell.style.borderRadius = `${CLOSED_RADIUS}px`
-        shell.style.padding = `${CLOSED_PADDING}px`
-
-        const flipTl = Flip.from(flipState, {
-            duration: 0.78,
-            ease: SPRING_OUT,
-            absolute: true,
-            immediateRender: true
-        })
-        tl.add(flipTl, 0.12)
+        /* shell collapse in 2 phases: direct compression + subtle settle, no visible bounce */
+        tl.to(shell, {
+            left: centerX,
+            top: topY + 1,
+            width: settleW,
+            height: settleH,
+            borderRadius: CLOSED_RADIUS,
+            padding: settlePad,
+            duration: 0.26,
+            ease: 'power3.in',
+        }, 0.02)
+        tl.to(shell, {
+            top: topY,
+            width: anchorW,
+            height: anchorH,
+            padding: CLOSED_PADDING,
+            duration: 0.14,
+            ease: 'power2.out',
+        }, 0.28)
 
         /* shadow collapse */
         tl.to(shell, {
             boxShadow: '0 4px 24px -6px rgba(0,0,0,0.45)',
-            duration: 0.5, ease: 'power2.inOut',
-        }, 0.12)
+            duration: 0.28, ease: 'power2.inOut',
+        }, 0.04)
 
-        /* closed pill rebounds in */
-        tl.to(closed, {
-            autoAlpha: 1, scale: 1, filter: 'blur(0px)',
-            duration: 0.4, ease: SPRING_OUT,
-        }, 0.55)
+        /* closed pill returns near the end */
+        tl.fromTo(closed, {
+            autoAlpha: 0, scale: 0.985, y: 2, filter: 'blur(3px)',
+        }, {
+            autoAlpha: 1, scale: 1, y: 0, filter: 'blur(0px)',
+            duration: 0.18, ease: 'power2.out',
+        }, 0.26)
     }, [isAnimating, isOpen, killTl, getAnchorPos, snapShellToAnchor, anchorW, anchorH])
 
     /* ── Escape key ── */
@@ -349,11 +504,85 @@ export default function DynamicIsland({
             const { width, height, padding } = getOpenMetrics()
             const openLeft = getClampedOpenLeft(centerX)
             const openTop = getClampedOpenTop(topY)
-            gsap.to(shell, { left: openLeft, top: openTop, width, height, padding, duration: 0.3, ease: 'power2.out' })
+            setOpenPosition(openLeft, openTop)
+            gsap.to(shell, {
+                left: openLeft,
+                top: openTop,
+                width,
+                height,
+                padding,
+                duration: 0.3,
+                ease: 'power2.out',
+            })
         }
         window.addEventListener('resize', onResize)
         return () => window.removeEventListener('resize', onResize)
-    }, [isOpen, isAnimating, getAnchorPos])
+    }, [isOpen, isAnimating, getAnchorPos, setOpenPosition])
+
+    /* ── drag to dismiss ── */
+    useEffect(() => {
+        if (!isOpen || isAnimating) {
+            killDraggable()
+            return
+        }
+
+        const shell = shellRef.current
+        const modal = modalRef.current
+        if (!shell || !modal) return
+
+        const [draggable] = Draggable.create(shell, {
+            type: 'left,top',
+            trigger: modal,
+            dragClickables: false,
+            minimumMovement: 6,
+            zIndexBoost: false,
+            onPress() {
+                dragStateRef.current.startLeft = getPixelValue(shell, 'left')
+                dragStateRef.current.startTop = getPixelValue(shell, 'top')
+                dragStateRef.current.dx = 0
+                dragStateRef.current.dy = 0
+                gsap.set(shell, { cursor: 'grabbing' })
+            },
+            onDrag() {
+                const currentLeft = getPixelValue(shell, 'left')
+                const currentTop = getPixelValue(shell, 'top')
+                const dx = currentLeft - dragStateRef.current.startLeft
+                const dy = currentTop - dragStateRef.current.startTop
+                dragStateRef.current.dx = dx
+                dragStateRef.current.dy = dy
+                updateDragFeedback(dx, dy)
+            },
+            onRelease() {
+                if (!this.isDragging) gsap.set(shell, { cursor: 'grab' })
+            },
+            onDragEnd() {
+                gsap.set(shell, { cursor: 'grab' })
+
+                const { dx, dy } = dragStateRef.current
+                const distance = Math.hypot(dx, dy)
+                const axisDistance = Math.max(Math.abs(dx), Math.abs(dy))
+
+                if (distance >= DRAG_CLOSE_THRESHOLD || axisDistance >= DRAG_CLOSE_MIN_AXIS) {
+                    close(true)
+                    return
+                }
+
+                resetDragPosition(true)
+            },
+        })
+
+        draggableRef.current = draggable
+        gsap.set(shell, { cursor: 'grab' })
+        resetDragPosition()
+
+        return () => {
+            if (draggableRef.current === draggable) {
+                draggableRef.current = null
+            }
+            draggable.kill()
+            gsap.set(shell, { clearProps: 'cursor' })
+        }
+    }, [isOpen, isAnimating, close, killDraggable, resetDragPosition, updateDragFeedback])
 
     /* ──────── render ──────── */
 
@@ -364,7 +593,7 @@ export default function DynamicIsland({
                 ref={backdropRef}
                 type="button"
                 aria-label="Cerrar"
-                onClick={close}
+                onClick={() => close()}
                 className={`fixed inset-0 bg-slate-950/60 ${isOpen || isAnimating ? 'pointer-events-auto' : 'pointer-events-none'
                     }`}
                 style={{
@@ -390,7 +619,10 @@ export default function DynamicIsland({
                     className="pointer-events-none absolute inset-0 rounded-[inherit] bg-linear-to-br from-cyan-400/20 via-transparent to-blue-500/10"
                 />
 
-                <div className="relative h-full w-full">
+                <div
+                    ref={contentRef}
+                    className="relative h-full w-full"
+                >
                     {/* pill (closed) — renders user-provided trigger or plain fallback */}
                     <div
                         ref={closedRef}
@@ -417,6 +649,7 @@ export default function DynamicIsland({
                         ref={modalRef}
                         className="absolute inset-0 flex flex-col gap-6"
                         aria-hidden={!isOpen}
+                        style={{ cursor: isOpen && !isAnimating ? 'grab' : 'default' }}
                     >
                         {/* built-in close header */}
                         <div className="flex items-center justify-between">
@@ -425,7 +658,7 @@ export default function DynamicIsland({
                             </p>
                             <button
                                 type="button"
-                                onClick={close}
+                                onClick={() => close()}
                                 className="rounded-full border border-white/25 bg-white/10 px-3 py-1.5 text-xs font-medium uppercase tracking-wider text-slate-200 transition-colors duration-200 hover:bg-white/20"
                             >
                                 Cerrar

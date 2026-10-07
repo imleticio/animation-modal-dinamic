@@ -100,7 +100,7 @@ export default function App() {
       </div>
       <div>
         {/* Ejemplo 3: usando solo triggerLabel (fallback sin estilos) */}
-        <DynamicIsland triggerLabel="Prueba">
+        <DynamicIsland triggerLabel="hola">
           <LoginForm />
         </DynamicIsland>
       </div>
